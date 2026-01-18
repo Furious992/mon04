@@ -1,0 +1,99 @@
+services:
+  elastic-hot:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.2
+    container_name: elastic-hot
+    environment:
+      - node.name=elastic-hot
+      - cluster.name=elk-cluster
+      - discovery.seed_hosts=elastic-warm
+      - cluster.initial_master_nodes=elastic-hot
+      - node.roles=master,data_hot,data_content,ingest
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es_hot_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks: [elk]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  elastic-warm:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.2
+    container_name: elastic-warm
+    environment:
+      - node.name=elastic-warm
+      - cluster.name=elk-cluster
+      - discovery.seed_hosts=elastic-hot
+      - node.roles=data_warm
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es_warm_data:/usr/share/elasticsearch/data
+    networks: [elk]
+    depends_on:
+      elastic-hot:
+        condition: service_healthy
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.12.2
+    container_name: logstash
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+    ports:
+      - "5044:5044"
+    networks: [elk]
+    depends_on:
+      elastic-hot:
+        condition: service_healthy
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.2
+    container_name: kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elastic-hot:9200
+      - xpack.security.enabled=false
+      - ELASTICSEARCH_REQUESTTIMEOUT=120000
+      - KBN_PATH_CONF=/usr/share/kibana/config
+    ports:
+      - "5601:5601"
+    volumes:
+    - ./kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+    networks: [elk]
+    depends_on:
+      elastic-hot:
+        condition: service_healthy
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.12.2
+    container_name: filebeat
+    user: root
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [elk]
+    depends_on:
+      - logstash
+
+volumes:
+  es_hot_data:
+  es_warm_data:
+networks:
+  elk:
+    driver: bridge
